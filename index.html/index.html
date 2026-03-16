@@ -355,12 +355,12 @@
       <p class="text-muted small" style="margin-bottom:.75rem;">Choose how you'd like to continue:</p>
       <div class="welcome-grid">
         <div class="welcome-opt" onclick="closeModal('modal-welcome');openModal('modal-register')">
-          <div class="wicon"></div>
+          <div class="wicon">📝</div>
           <div class="wtitle">Register</div>
           <div class="wsub">Create a new account</div>
         </div>
         <div class="welcome-opt" onclick="closeModal('modal-welcome');openModal('modal-login')">
-          <div class="wicon"></div>
+          <div class="wicon">🔑</div>
           <div class="wtitle">Login</div>
           <div class="wsub">Sign in to your account</div>
         </div>
@@ -426,7 +426,10 @@
       <div class="alert alert-danger" id="login-err"></div>
       <div class="fmb"><label class="fl">Email</label><input type="email" id="login-email" class="fc" placeholder="admin@example.com"/></div>
       <div class="fmb"><label class="fl">Password</label><input type="password" id="login-pw" class="fc" placeholder="Password"/></div>
-      <p class="text-muted small">Demo admin: <code>admin@example.com</code> / <code>Password123!</code></p>
+      <p class="text-muted small">
+        Demo admin: <code>admin@example.com</code> / <code>admin123</code><br/>
+        Demo user: <code>alice@example.com</code> / <code>user123</code>
+      </p>
     </div>
     <div class="modal-ftr">
       <button class="btn btn-secondary" onclick="closeModal('modal-login')">Cancel</button>
@@ -523,8 +526,14 @@ function loadDB(){
 function saveDB(){ localStorage.setItem(SK,JSON.stringify(window.db)); }
 function seedDB(){
   window.db={
-    accounts:[{id:'a1',firstName:'Admin',lastName:'User',email:'admin@example.com',password:'Password123!',role:'Admin',verified:true}],
-    departments:[{id:'d1',name:'Engineering',description:'Software team'},{id:'d2',name:'HR',description:'Human Resources'}],
+    accounts:[
+      {id:'a1',firstName:'Admin',lastName:'User',email:'admin@example.com',password:'admin123',role:'Admin',verified:true},
+      {id:'a2',firstName:'Alice',lastName:'User',email:'alice@example.com',password:'user123',role:'User',verified:true}
+    ],
+    departments:[
+      {id:'d1',name:'Engineering',description:'Software team'},
+      {id:'d2',name:'HR',description:'Human Resources'}
+    ],
     employees:[], requests:[]
   };
   saveDB();
@@ -537,10 +546,16 @@ function setAuth(isAuth,user=null){
   else showPage('page-home');
 }
 function restoreSession(){
-  const t=localStorage.getItem('auth_token');
-  if(!t) return;
-  const u=window.db.accounts.find(a=>a.email===t&&a.verified);
-  if(u) setAuth(true,u);
+  const token=sessionStorage.getItem('authToken');
+  const savedUser=sessionStorage.getItem('currentUser');
+  if(token && savedUser){
+    try{
+      const user=JSON.parse(savedUser);
+      // Re-fetch from local DB to get full user object (firstName, lastName, role etc.)
+      const dbUser=window.db.accounts.find(a=>a.email===user.email);
+      if(dbUser){ currentUser=dbUser; renderNav(); showPage('page-dashboard'); renderDash(); }
+    }catch(e){ sessionStorage.clear(); }
+  }
 }
 
 // ── Nav ────────────────────────────────────────────────
@@ -556,7 +571,7 @@ function renderNav(){
       <div class="nav-dropdown" id="nd">
         <button class="nav-dd-toggle" onclick="toggleDD()">${esc(currentUser.firstName)} ${esc(currentUser.lastName)}</button>
         <div class="nav-dd-menu" id="nd-menu">
-          <button class="nav-dd-item" onclick="goTab('profile')"> Profile</button>
+          <button class="nav-dd-item" onclick="goTab('profile')">👤 Profile</button>
           ${isAdmin?`
           <button class="nav-dd-item" onclick="goTab('employees')">Employees <span class="admin-pill">Admin</span></button>
           <button class="nav-dd-item" onclick="goTab('accounts')">Accounts <span class="admin-pill">Admin</span></button>
@@ -968,24 +983,67 @@ function doVerify(){
   closeModal('modal-verify');
   if(acc){localStorage.setItem('auth_token',acc.email);setAuth(true,acc);toast(`✅ Verified! Welcome, ${acc.firstName}!`,'success');}
 }
-function doLogin(){
-  const email=document.getElementById('login-email').value.trim().toLowerCase(),pw=document.getElementById('login-pw').value;
-  const user=window.db.accounts.find(a=>a.email===email&&a.password===pw&&a.verified);
-  if(!user){
-    const exists=window.db.accounts.find(a=>a.email===email);
-    salert('login-err','danger',exists&&!exists.verified?'Email not verified. Please verify first.':'Invalid email or password.');
-    return;
+
+// ── Login (calls backend) ───────────────────────────────
+async function doLogin(){
+  const email=document.getElementById('login-email').value.trim().toLowerCase();
+  const pw=document.getElementById('login-pw').value;
+  const errEl='login-err';
+  halert(errEl);
+
+  try{
+    const response=await fetch('http://localhost:3000/api/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:email,password:pw})
+    });
+
+    const data=await response.json();
+
+    if(response.ok){
+      // Save token to sessionStorage
+      sessionStorage.setItem('authToken',data.token);
+
+      // Find the full user object from local DB
+      const user=window.db.accounts.find(a=>a.email===email);
+
+      if(!user){
+        // User exists on backend but not in local DB — add them on the fly
+        const newUser={
+          id:'a'+Date.now(),
+          firstName:email.split('@')[0],
+          lastName:'',
+          email:email,
+          password:pw,
+          role:data.role==='admin'?'Admin':'User',
+          verified:true
+        };
+        window.db.accounts.push(newUser);
+        saveDB();
+        sessionStorage.setItem('currentUser',JSON.stringify(newUser));
+        setAuth(true,newUser);
+      } else {
+        sessionStorage.setItem('currentUser',JSON.stringify(user));
+        setAuth(true,user);
+      }
+
+      closeModal('modal-login');
+      toast(`Welcome back, ${currentUser.firstName}!`,'success');
+    } else {
+      salert(errEl,'danger',data.message||'Invalid email or password.');
+    }
+  } catch(err){
+    salert(errEl,'danger','Error: Could not connect to the backend server. Make sure node server.js is running.');
   }
-  halert('login-err');
-  localStorage.setItem('auth_token',user.email);
-  document.getElementById('login-email').value='';
-  document.getElementById('login-pw').value='';
-  closeModal('modal-login');
-  setAuth(true,user);
-  toast(`Welcome back, ${user.firstName}!`,'success');
 }
+
 function doLogout(){
-  closeDD(); localStorage.removeItem('auth_token'); setAuth(false); toast('Logged out.','info');
+  closeDD();
+  localStorage.removeItem('auth_token');
+  sessionStorage.removeItem('authToken');
+  sessionStorage.removeItem('currentUser');
+  setAuth(false);
+  toast('Logged out.','info');
 }
 
 // ── Modal helpers ───────────────────────────────────────

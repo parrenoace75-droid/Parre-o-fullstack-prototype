@@ -4,8 +4,14 @@
    ===================================================== */
 
 // ── Global state ──────────────────────────────────────
+function getAuthHeader() {
+    const token = sessionStorage.getItem('authToken');
+    // This sends the token in the format the server expects: "Bearer <token>"
+    return token ? { 'Authorization': `Bearer ${token}` } : {};
+}
 let currentUser = null;
 const STORAGE_KEY = 'ipt_demo_v1';
+
 
 // ── Toast helper ──────────────────────────────────────
 function showToast(message, type = 'success') {
@@ -88,58 +94,62 @@ function navigateTo(hash) {
   window.location.hash = hash;
 }
 
-function handleRouting() {
+// Note the 'async' at the start - this is required for fetch to work!
+async function handleRouting() {
   let hash = window.location.hash || '#/';
 
-  // Route guards
+  // 1. Basic Guard: Is the user logged in for protected pages?
   if (PROTECTED_ROUTES.includes(hash) && !currentUser) {
     navigateTo('#/login');
     return;
   }
+
+  // 2. SERVER CHECK: If it's an Admin page, verify with the Backend
   if (ADMIN_ROUTES.includes(hash)) {
-    if (!currentUser) { navigateTo('#/login'); return; }
-    if (currentUser.role !== 'Admin') { navigateTo('#/'); showToast('Access denied.', 'danger'); return; }
+    try {
+      const res = await fetch('http://localhost:3000/api/admin/dashboard', {
+        headers: getAuthHeader() // This sends your token to the server
+      });
+
+      if (!res.ok) {
+        // If the server says "Forbidden" (Alice trying to sneak in)
+        navigateTo('#/'); 
+        showToast('Access denied. Admin only!', 'danger'); 
+        return; 
+      }
+    } catch (err) {
+      // If the server is offline
+      navigateTo('#/login');
+      return;
+    }
   }
 
-  // Hide all pages
+  // 3. UI Logic: Show the correct page (This part is the same as before)
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
 
-  // Show matching page
   const map = {
-    '#/'             : 'home-page',
-    '#/register'     : 'register-page',
-    '#/verify-email' : 'verify-email-page',
-    '#/login'        : 'login-page',
-    '#/profile'      : 'profile-page',
-    '#/employees'    : 'employees-page',
-    '#/departments'  : 'departments-page',
-    '#/accounts'     : 'accounts-page',
-    '#/requests'     : 'requests-page'
+    '#/': 'home-page',
+    '#/register': 'register-page',
+    '#/verify-email': 'verify-email-page',
+    '#/login': 'login-page',
+    '#/profile': 'profile-page',
+    '#/employees': 'employees-page',
+    '#/departments': 'departments-page',
+    '#/accounts': 'accounts-page',
+    '#/requests': 'requests-page'
   };
 
-  const pageId = map[hash];
-  if (pageId) {
-    const el = document.getElementById(pageId);
-    if (el) el.classList.add('active');
-  } else {
-    document.getElementById('home-page').classList.add('active');
-  }
+  const pageId = map[hash] || 'home-page';
+  const el = document.getElementById(pageId);
+  if (el) el.classList.add('active');
 
-  // Page-specific init
-  if (hash === '#/profile')     renderProfile();
-  if (hash === '#/employees')   renderEmployeesTable();
+  // Page-specific rendering
+  if (hash === '#/profile') renderProfile();
+  if (hash === '#/employees') renderEmployeesTable();
   if (hash === '#/departments') renderDepartmentsTable();
-  if (hash === '#/accounts')    renderAccountsList();
-  if (hash === '#/requests')    renderRequestsList();
-  if (hash === '#/verify-email') renderVerifyPage();
-  if (hash === '#/login') {
-    const verified = localStorage.getItem('just_verified');
-    const msg = document.getElementById('login-verified-msg');
-    if (verified) { msg.classList.remove('d-none'); localStorage.removeItem('just_verified'); }
-    else msg.classList.add('d-none');
-  }
+  if (hash === '#/accounts') renderAccountsList();
+  if (hash === '#/requests') renderRequestsList();
 }
-
 window.addEventListener('hashchange', handleRouting);
 
 // ── Registration ──────────────────────────────────────
@@ -200,26 +210,48 @@ function initVerify() {
   });
 }
 
-// ── Login ─────────────────────────────────────────────
 function initLogin() {
-  document.getElementById('btn-login').addEventListener('click', () => {
+  document.getElementById('btn-login').addEventListener('click', async () => {
     const email = document.getElementById('login-email').value.trim().toLowerCase();
     const pw    = document.getElementById('login-password').value;
     const errEl = document.getElementById('login-error');
 
-    const user = window.db.accounts.find(
-      a => a.email === email && a.password === pw && a.verified === true
-    );
-    if (user) {
-      errEl.classList.add('d-none');
-      localStorage.setItem('auth_token', email);
-      setAuthState(true, user);
-      document.getElementById('login-email').value = '';
-      document.getElementById('login-password').value = '';
-      showToast(`Welcome back, ${user.firstName}!`, 'success');
-      navigateTo('#/profile');
-    } else {
-      errEl.textContent = 'Invalid credentials or email not verified.';
+    try {
+      // 1. Send to /api/login (NOT the dashboard)
+      const response = await fetch('http://localhost:3000/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: email, password: pw })
+      });
+
+      // 2. Use 'response' here to match the variable name above
+      const data = await response.json();
+
+      if (response.ok) {
+        errEl.classList.add('d-none');
+        
+        // Save the session data
+        sessionStorage.setItem('authToken', data.token);
+        
+        const userRole = data.role === 'admin' ? 'Admin' : 'User';
+        const user = { 
+            firstName: email.split('@')[0], 
+            lastName: '', 
+            role: userRole,
+            email: email 
+        };
+        
+        sessionStorage.setItem('user', JSON.stringify(user));
+        setAuthState(true, user);
+        
+        showToast(`Welcome back!`, 'success');
+        navigateTo('#/profile');
+      } else {
+        errEl.textContent = data.message || 'Login failed';
+        errEl.classList.remove('d-none');
+      }
+    } catch (err) {
+      errEl.textContent = 'Could not connect to server.';
       errEl.classList.remove('d-none');
     }
   });
@@ -229,9 +261,15 @@ function initLogin() {
 function initLogout() {
   document.getElementById('btn-logout').addEventListener('click', e => {
     e.preventDefault();
-    localStorage.removeItem('auth_token');
+    
+    // 1. Clear the session data we saved during login
+    sessionStorage.removeItem('authToken');
+    sessionStorage.removeItem('user');
+    
+    // 2. Reset the UI state
     setAuthState(false);
-    showToast('Logged out.', 'info');
+    
+    showToast('Logged out successfully.', 'info');
     navigateTo('#/');
   });
 }
@@ -632,14 +670,22 @@ function escAttr(str = '') { return escHtml(str); }
 function init() {
   loadFromStorage();
 
-  // Restore session from localStorage
-  const token = localStorage.getItem('auth_token');
-  if (token) {
-    const user = window.db.accounts.find(a => a.email === token && a.verified);
-    if (user) setAuthState(true, user);
+  // 1. Restore session from sessionStorage (Full-Stack Way)
+  const token = sessionStorage.getItem('authToken');
+  const savedUser = sessionStorage.getItem('user');
+
+  if (token && savedUser) {
+    try {
+      // Parse the stored user string back into an object
+      const user = JSON.parse(savedUser);
+      setAuthState(true, user);
+    } catch (e) {
+      // If data is corrupt, clear it
+      sessionStorage.clear();
+    }
   }
 
-  // Wire up all features
+  // 2. Wire up all features
   initRegister();
   initVerify();
   initLogin();
@@ -650,8 +696,10 @@ function init() {
   initEmployees();
   initRequests();
 
-  // Start routing
+  // 3. Start routing
   if (!window.location.hash) window.location.hash = '#/';
+  
+  // Important: handleRouting is async, so we call it
   handleRouting();
 }
 
